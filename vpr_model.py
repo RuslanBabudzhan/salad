@@ -1,9 +1,10 @@
 import pytorch_lightning as pl
 import torch
-from torch.optim import lr_scheduler, optimizer
+from torch.optim import lr_scheduler
 
 import utils
 from models import helper
+from utils.grad_cache import grad_cache_backward
 
 
 class VPRModel(pl.LightningModule):
@@ -39,9 +40,14 @@ class VPRModel(pl.LightningModule):
         loss_name='MultiSimilarityLoss', 
         miner_name='MultiSimilarityMiner', 
         miner_margin=0.1,
-        faiss_gpu=False
+        faiss_gpu=False,
+        grad_cache_chunk_size=0,
     ):
         super().__init__()
+        self.automatic_optimization = False
+        if grad_cache_chunk_size < 0:
+            raise ValueError('grad_cache_chunk_size must be nonnegative')
+        self.grad_cache_chunk_size = grad_cache_chunk_size
 
         # Backbone
         self.encoder_arch = backbone_arch
@@ -68,13 +74,15 @@ class VPRModel(pl.LightningModule):
         
         self.loss_fn = utils.get_loss(loss_name)
         self.miner = utils.get_miner(miner_name, miner_margin)
-        self.batch_acc = [] # we will keep track of the % of trivial pairs/triplets at the loss level 
 
         self.faiss_gpu = faiss_gpu
         
         # ----------------------------------
         # get the backbone and the aggregator
         self.backbone = helper.get_backbone(backbone_arch, backbone_config)
+        if agg_arch.lower() == 'salad':
+            agg_config = dict(agg_config)
+            agg_config.setdefault('num_channels', self.backbone.num_channels)
         self.aggregator = helper.get_aggregator(agg_arch, agg_config)
 
         # For validation in Lightning v2.0.0
@@ -90,20 +98,20 @@ class VPRModel(pl.LightningModule):
     def configure_optimizers(self):
         if self.optimizer.lower() == 'sgd':
             optimizer = torch.optim.SGD(
-                self.parameters(), 
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.lr, 
                 weight_decay=self.weight_decay, 
                 momentum=self.momentum
             )
         elif self.optimizer.lower() == 'adamw':
             optimizer = torch.optim.AdamW(
-                self.parameters(), 
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.lr, 
                 weight_decay=self.weight_decay
             )
         elif self.optimizer.lower() == 'adam':
             optimizer = torch.optim.AdamW(
-                self.parameters(), 
+                filter(lambda p: p.requires_grad, self.parameters()),
                 lr=self.lr, 
                 weight_decay=self.weight_decay
             )
@@ -123,16 +131,15 @@ class VPRModel(pl.LightningModule):
                 total_iters=self.lr_sched_args['total_iters']
             )
 
+        else:
+            raise ValueError(f'Unknown scheduler: {self.lr_sched}')
+
         return [optimizer], [scheduler]
-    
-    # configure the optizer step, takes into account the warmup stage
-    def optimizer_step(self,  epoch, batch_idx, optimizer, optimizer_closure):
-        # warm up lr
-        optimizer.step(closure=optimizer_closure)
-        self.lr_schedulers().step()
         
     #  The loss function call (this method will be called at each training iteration)
     def loss_function(self, descriptors, labels):
+        if not torch.isfinite(descriptors).all():
+            raise ValueError('Nonfinite descriptors')
         # we mine the pairs/triplets if there is an online mining strategy
         if self.miner is not None:
             miner_outputs = self.miner(descriptors, labels)
@@ -155,39 +162,53 @@ class VPRModel(pl.LightningModule):
                 # and return a tuple containing the loss value and the batch_accuracy (the % of valid pairs or triplets)
                 loss, batch_acc = loss
 
-        # keep accuracy of every batch and later reset it at epoch start
-        self.batch_acc.append(batch_acc)
-        # log it
-        self.log('b_acc', sum(self.batch_acc) /
-                len(self.batch_acc), prog_bar=True, logger=True)
+        if not torch.isfinite(loss):
+            raise ValueError('Nonfinite loss')
+        self.log('b_acc', batch_acc, on_step=True, on_epoch=True, batch_size=len(labels))
         return loss
     
     # This is the training step that's executed at each iteration
     def training_step(self, batch, batch_idx):
-        places, labels = batch
-        
-        # Note that GSVCities yields places (each containing N images)
-        # which means the dataloader will return a batch containing BS places
-        BS, N, ch, h, w = places.shape
-        
-        # reshape places and labels
-        images = places.view(BS*N, ch, h, w)
-        labels = labels.view(-1)
+        # MegaLoc supplies separate subsets; legacy GSV-Cities supplies one pair.
+        subsets = batch if isinstance(batch, dict) else {'train': batch}
+        optimizer = self.optimizers()
+        optimizer.zero_grad(set_to_none=True)
+        total = torch.zeros((), device=self.device)
+        for name, (images, labels) in subsets.items():
+            images = images.reshape(-1, *images.shape[-3:])
+            labels = labels.reshape(-1)
+            if self.grad_cache_chunk_size:
+                loss = grad_cache_backward(
+                    self, images, labels, self.loss_function,
+                    self.grad_cache_chunk_size, self.manual_backward,
+                )
+            else:
+                descriptors = self(images.to(self.device, non_blocking=True)).float()
+                with torch.autocast(device_type=self.device.type, enabled=False):
+                    loss = self.loss_function(descriptors, labels.to(self.device))
+                    self.manual_backward(loss)
+                loss = loss.detach()
+            total += loss
+            self.log(f'loss/{name}', loss, on_step=True, on_epoch=False, batch_size=len(labels))
 
-        # Feed forward the batch to the model
-        descriptors = self(images) # Here we are calling the method forward that we defined above
+        scaler = getattr(self.trainer.precision_plugin, 'scaler', None)
+        scale = scaler.get_scale() if scaler is not None else None
+        optimizer.step()
+        # A reduced AMP scale means the optimizer skipped an overflowing update.
+        if scaler is None or scaler.get_scale() >= scale:
+            self.lr_schedulers().step()
+        self.log('loss', total, prog_bar=True, on_step=True, on_epoch=False, batch_size=1)
+        return {'loss': total}
 
-        if torch.isnan(descriptors).any():
-            raise ValueError('NaNs in descriptors')
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        if self.trainer.training and isinstance(batch, dict):
+            # Keep all image groups on CPU; transfer only the active chunk.
+            return batch
+        return super().transfer_batch_to_device(batch, device, dataloader_idx)
 
-        loss = self.loss_function(descriptors, labels) # Call the loss_function we defined above
-        
-        self.log('loss', loss.item(), logger=True, prog_bar=True)
-        return {'loss': loss}
-    
-    def on_train_epoch_end(self):
-        # we empty the batch_acc list for next epoch
-        self.batch_acc = []
+    def on_train_start(self):
+        if self.trainer.world_size != 1:
+            raise ValueError('This training loop currently supports one device')
 
     # For validation, we will also iterate step by step over the validation set
     # this is the way Pytorch Lghtning is made. All about modularity, folks.

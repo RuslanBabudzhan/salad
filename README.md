@@ -16,7 +16,22 @@ For more details, check the paper at [arXiv](https://arxiv.org/abs/2311.15937).
 
 ## Setup
 
-It has been tested on Pytorch 2.1.0 with CUDA 12.1 and Xformers. Create a ready to run environment with:
+For the standalone uv environment, run from this directory:
+
+```bash
+uv sync --locked
+uv run python train_megaloc.py --help
+uv run python -m unittest discover -s tests -v
+```
+
+This creates `.venv` with Python 3.12, PyTorch 2.8 / CUDA 12.8, matching
+torchvision and xFormers, Lightning, metric-learning, Parquet, and evaluation
+dependencies. FAISS retrieval uses the CPU (`faiss_gpu=False`); model training
+uses CUDA. `uv.lock` records the installed versions. This environment is separate
+from `localizer-service/.venv`.
+
+The original code was tested on PyTorch 2.1.0 with CUDA 12.1 and Xformers. Its
+Conda environment remains available:
 ```bash
 conda env create -f environment.yml
 ```
@@ -34,6 +49,72 @@ model.cuda()
 For training, download [GSV-Cities](https://github.com/amaralibey/gsv-cities) dataset. For evaluation download the desired datasets ([MSLS](https://github.com/FrederikWarburg/mapillary_sls), [NordLand](https://surfdrive.surf.nl/files/index.php/s/sbZRXzYe3l0v67W), [SPED](https://surfdrive.surf.nl/files/index.php/s/sbZRXzYe3l0v67W), or [Pittsburgh](https://data.ciirc.cvut.cz/public/projects/2015netVLAD/Pittsburgh250k/))
 
 ## Train
+
+Select preprocessed MegaLoc schedules with a data manifest:
+
+```yaml
+path: ..
+data:
+  - name: v1_d4_vanilla
+    subsets:
+      - gsv_cities
+      - megascenes
+      - msls
+      - sf_xl_frontal
+      - sf_xl_lateral
+```
+
+`path` is relative to the manifest. Each `name` identifies a standalone dataset
+folder containing `batches/`, `meta/`, and its image paths. Only listed subsets
+are loaded, and their YAML order is preserved. Remove a dataset or subset from
+the manifest to disable it.
+
+```python
+from torch.utils.data import DataLoader
+from torchvision import transforms as T
+from dataloaders.MegaLocDataset import MegaLocDataset
+
+transform = T.Compose([
+    T.Resize((224, 224)),
+    T.RandAugment(num_ops=3),
+    T.ToTensor(),
+    T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+dataset = MegaLocDataset("/path/to/data.yaml", transform)
+loader = DataLoader(dataset, batch_size=None, shuffle=False, num_workers=4)
+for iteration in loader:
+    for subset, (images, labels) in iteration.items():
+        # images: [128, 3, 224, 224]; labels: [128], local to this subset.
+        pass  # Compute each subset's loss separately; step once per iteration.
+```
+
+The selected schedules must have the same length (4 for the snapshot, 40,000
+for the full dataset). Metadata paths are resolved from their standalone dataset
+folder, so they may reference shared images with relative paths.
+
+`train_megaloc.py` trains DINOv3 with MegaLoc's head: SALAD with 64 clusters,
+256 channels per cluster, and a 256-dimensional global token, followed by a
+learned 16,640 → 8,448 linear projection and L2 normalization. The last four
+backbone blocks and the entire head are trained using gradient caching.
+Each iteration sums all discovered subset losses before one optimizer update.
+Each launch creates `logs/YYYY-MM-DD_HH-MM-SS_microseconds/` containing resolved
+`config.yaml` and `data.yaml` files, a `metrics.csv` row for every iteration,
+and full checkpoints under `checkpoints/`. Periodic checkpoints are retained every 5,000
+iterations by default, while `checkpoints/last.ckpt` always records the final
+state. Model, optimization, augmentation, iteration, GradCache, seed, and
+checkpoint settings live in `configs/train_megaloc.yaml`; `iterations: null`
+consumes the complete schedule. Training requires a CUDA GPU. Launch from this
+directory with:
+
+```bash
+uv run python train_megaloc.py \
+    --data /mnt/e/D_WORK/Localizer/data/datasets/processed/MegaLoc/train/configs/v1_d_vanilla.yaml \
+    --config configs/train_megaloc.yaml \
+    --num-workers 0
+```
+
+Validation is disabled in this entrypoint. The projection is optional in SALAD
+(`agg_config["output_dim"]`); existing configurations keep their original head.
 
 Training is done on GSV-Cities for 4 complete epochs. It requires around 30 minutes on an NVIDIA RTX 3090. For training DINOv2 SALAD run:
 ```bash

@@ -1,0 +1,38 @@
+[project]
+name = "salad-training"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+    "xformers==0.0.32.post2",
+    "pytorch-lightning>=2.5,<2.6",
+    "torchmetrics>=1.8,<1.9",
+    "pytorch-metric-learning>=2.8,<3",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<3",
+    "pyarrow>=18",
+    "pillow>=10",
+    "faiss-cpu>=1.9",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "prettytable>=3.9",
+    "tqdm>=4.66",
+    "tensorboard>=2.18",
+    "omegaconf>=2.3",
+    "transformers>=4.56,<5",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+xformers = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

@@ -64,6 +64,7 @@ class SALAD(nn.Module):
         cluster_dim (int): The number of channels of the clusters (l).
         token_dim (int): The dimension of the global scene token (g).
         dropout (float): The dropout rate.
+        output_dim (int, optional): Project and L2-normalize the descriptor to this size.
     """
     def __init__(self,
             num_channels=1536,
@@ -71,6 +72,7 @@ class SALAD(nn.Module):
             cluster_dim=128,
             token_dim=256,
             dropout=0.3,
+            output_dim=None,
         ) -> None:
         super().__init__()
 
@@ -106,6 +108,10 @@ class SALAD(nn.Module):
         )
         # Dustbin parameter z
         self.dust_bin = nn.Parameter(torch.tensor(1.))
+        self.projection = (
+            nn.Linear(num_clusters * cluster_dim + token_dim, output_dim)
+            if output_dim is not None else None
+        )
 
 
     def forward(self, x):
@@ -115,7 +121,7 @@ class SALAD(nn.Module):
             (torch.Tensor): The token tensor (t_{n+1}) [B, C].
 
         Returns:
-            f (torch.Tensor): The global descriptor [B, m*l + g]
+            f (torch.Tensor): Unit descriptor [B, output_dim or m*l + g].
         """
         x, t = x # Extract features and token
 
@@ -138,4 +144,7 @@ class SALAD(nn.Module):
             nn.functional.normalize((f * p).sum(dim=-1), p=2, dim=1).flatten(1)
         ], dim=-1)
 
-        return nn.functional.normalize(f, p=2, dim=-1)
+        f = nn.functional.normalize(f, p=2, dim=-1)
+        if self.projection is not None:
+            f = nn.functional.normalize(self.projection(f), p=2, dim=-1)
+        return f
