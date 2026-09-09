@@ -1,7 +1,6 @@
 -include .env
 
 IMAGE ?= salad-training
-DATA ?= /data/configs/v1_d_vanilla.yaml
 HF_CACHE ?= $(HOME)/.cache/huggingface
 
 DOCKER_RUN = docker run --rm --gpus all --shm-size=16g \
