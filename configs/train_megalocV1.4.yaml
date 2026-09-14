@@ -1,0 +1,35 @@
+# DINOv3 ViT-S/16 distilled from ViT-7B on LVD-1689M.
+training:
+  iterations: 20000
+  seed: 42
+  grad_cache_chunk_size: 32
+  checkpoint_every_n_steps: 1000
+
+augmentation:
+  image_size: [256, 256]
+  randaugment_ops: 3
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
+
+model:
+  backbone: dinov3_vits16
+  backbone_weights: facebook/dinov3-vits16-pretrain-lvd1689m
+  trainable_blocks: 4
+  num_clusters: 64
+  cluster_dim: 256
+  token_dim: 256
+  output_dim: 8448
+
+optimizer:
+  name: adamw
+  learning_rate: 6.0e-5
+  weight_decay: 9.5e-9
+
+scheduler:
+  name: linear
+  end_factor: 0.2
+
+loss:
+  name: MultiSimilarityLoss
+  miner: MultiSimilarityMiner
+  miner_margin: 0.1
