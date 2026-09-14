@@ -4,12 +4,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from omegaconf import OmegaConf
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader
 from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
 from models.backbones.dinov3 import DINOv3
+from train_megaloc import make_train_transform
 from vpr_model import VPRModel
 
 
@@ -72,6 +74,15 @@ class DINOv3TrainingTests(unittest.TestCase):
         backbone = DINOv3(weights=self.weights, num_trainable_blocks=1)
         with self.assertRaisesRegex(ValueError, "divisible"):
             backbone(torch.randn(1, 3, 33, 32))
+
+    def test_satellite_config_uses_checkpoint_normalization(self):
+        config = OmegaConf.load("configs/train_megalocV1.3.yaml")
+        normalize = make_train_transform(config.augmentation).transforms[-1]
+        self.assertEqual(config.model.backbone, "dinov3_vitl16")
+        self.assertEqual(config.model.backbone_weights,
+                         "facebook/dinov3-vitl16-pretrain-sat493m")
+        self.assertEqual(normalize.mean, [0.430, 0.411, 0.296])
+        self.assertEqual(normalize.std, [0.213, 0.156, 0.143])
 
     def test_multiple_subset_losses_one_update_and_checkpoint(self):
         torch.manual_seed(3)

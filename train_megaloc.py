@@ -14,6 +14,21 @@ from dataloaders.MegaLocDataset import MegaLocDataset
 from vpr_model import VPRModel
 
 
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+def make_train_transform(config):
+    return T.Compose([
+        T.Resize(tuple(config.image_size), interpolation=T.InterpolationMode.BILINEAR),
+        T.RandAugment(num_ops=config.randaugment_ops,
+                      interpolation=T.InterpolationMode.BILINEAR),
+        T.ToTensor(),
+        T.Normalize(config.get("image_mean", IMAGENET_MEAN),
+                    config.get("image_std", IMAGENET_STD)),
+    ])
+
+
 def make_run_dir(logs_dir):
     started_at = datetime.now().astimezone()
     run_dir = logs_dir / started_at.strftime("%Y-%m-%d_%H-%M-%S_%f")
@@ -36,15 +51,7 @@ def main():
         parser.error("--num-workers must be nonnegative")
 
     config = OmegaConf.load(args.config)
-    image_size = tuple(config.augmentation.image_size)
-    transform = T.Compose([
-        T.Resize(image_size, interpolation=T.InterpolationMode.BILINEAR),
-        T.RandAugment(num_ops=config.augmentation.randaugment_ops,
-                      interpolation=T.InterpolationMode.BILINEAR),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-    dataset = MegaLocDataset(args.data, transform)
+    dataset = MegaLocDataset(args.data, make_train_transform(config.augmentation))
     max_steps = len(dataset) if config.training.iterations is None else config.training.iterations
     if max_steps < 1:
         parser.error("training.iterations must be at least 1")
