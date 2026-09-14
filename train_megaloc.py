@@ -46,8 +46,8 @@ def main():
     ])
     dataset = MegaLocDataset(args.data, transform)
     max_steps = len(dataset) if config.training.iterations is None else config.training.iterations
-    if not 1 <= max_steps <= len(dataset):
-        parser.error(f"training.iterations must be between 1 and {len(dataset)}")
+    if max_steps < 1:
+        parser.error("training.iterations must be at least 1")
     if config.training.grad_cache_chunk_size < 0:
         parser.error("training.grad_cache_chunk_size must be nonnegative")
     if config.training.checkpoint_every_n_steps < 1:
@@ -141,7 +141,7 @@ def main():
         default_root_dir=run_dir,
         logger=logger,
         precision=args.precision,
-        max_epochs=1,
+        max_epochs=-1,
         max_steps=max_steps,
         limit_val_batches=0,
         num_sanity_val_steps=0,
