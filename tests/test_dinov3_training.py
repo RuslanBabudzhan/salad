@@ -84,6 +84,15 @@ class DINOv3TrainingTests(unittest.TestCase):
         self.assertEqual(normalize.mean, [0.430, 0.411, 0.296])
         self.assertEqual(normalize.std, [0.213, 0.156, 0.143])
 
+    def test_distilled_small_config_uses_web_normalization(self):
+        config = OmegaConf.load("configs/train_megalocV1.4.yaml")
+        normalize = make_train_transform(config.augmentation).transforms[-1]
+        self.assertEqual(config.model.backbone, "dinov3_vits16")
+        self.assertEqual(config.model.backbone_weights,
+                         "facebook/dinov3-vits16-pretrain-lvd1689m")
+        self.assertEqual(normalize.mean, [0.485, 0.456, 0.406])
+        self.assertEqual(normalize.std, [0.229, 0.224, 0.225])
+
     def test_multiple_subset_losses_one_update_and_checkpoint(self):
         torch.manual_seed(3)
         model = self.make_model(output_dim=6)

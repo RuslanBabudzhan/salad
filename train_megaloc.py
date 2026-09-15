@@ -1,4 +1,4 @@
-"""Train DINOv3 + SALAD on MegaLoc schedules with gradient caching."""
+"""Train DINO + SALAD on MegaLoc schedules with gradient caching."""
 
 import argparse
 from datetime import datetime
@@ -27,6 +27,15 @@ def make_train_transform(config):
         T.Normalize(config.get("image_mean", IMAGENET_MEAN),
                     config.get("image_std", IMAGENET_STD)),
     ])
+
+
+def make_backbone_config(config):
+    backbone_config = {"num_trainable_blocks": config.trainable_blocks}
+    if "dinov2" in config.backbone.lower():
+        backbone_config.update(norm_layer=True, return_token=True)
+    else:
+        backbone_config["weights"] = config.backbone_weights
+    return backbone_config
 
 
 def make_run_dir(logs_dir):
@@ -100,10 +109,7 @@ def main():
     }
     model = VPRModel(
         backbone_arch=config.model.backbone,
-        backbone_config={
-            "weights": config.model.backbone_weights,
-            "num_trainable_blocks": config.model.trainable_blocks,
-        },
+        backbone_config=make_backbone_config(config.model),
         agg_arch="SALAD",
         agg_config={
             "num_clusters": config.model.num_clusters,

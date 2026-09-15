@@ -1,3 +1,5 @@
+import os
+
 import torch
 import torch.nn as nn
 
@@ -29,11 +31,20 @@ class DINOv2(nn.Module):
         super().__init__()
 
         assert model_name in DINOV2_ARCHS.keys(), f'Unknown model name {model_name}'
+        # PyTorch SDPA is portable; prebuilt xFormers kernels may not support the GPU.
+        os.environ.setdefault("XFORMERS_DISABLED", "1")
         self.model = torch.hub.load('facebookresearch/dinov2', model_name)
         self.num_channels = DINOV2_ARCHS[model_name]
+        self.patch_size = 14
+        if not 0 <= num_trainable_blocks <= len(self.model.blocks):
+            raise ValueError("num_trainable_blocks must be between 0 and the backbone depth")
         self.num_trainable_blocks = num_trainable_blocks
         self.norm_layer = norm_layer
         self.return_token = return_token
+
+        self.model.requires_grad_(False)
+        for block in self.model.blocks[len(self.model.blocks) - num_trainable_blocks:]:
+            block.requires_grad_(True)
 
 
     def forward(self, x):
@@ -49,17 +60,20 @@ class DINOv2(nn.Module):
         """
 
         B, C, H, W = x.shape
+        if H % self.patch_size or W % self.patch_size:
+            raise ValueError(f"Image dimensions must be divisible by {self.patch_size}")
 
         x = self.model.prepare_tokens_with_masks(x)
-        
+        first_trainable = len(self.model.blocks) - self.num_trainable_blocks
+
         # First blocks are frozen
         with torch.no_grad():
-            for blk in self.model.blocks[:-self.num_trainable_blocks]:
+            for blk in self.model.blocks[:first_trainable]:
                 x = blk(x)
         x = x.detach()
 
         # Last blocks are trained
-        for blk in self.model.blocks[-self.num_trainable_blocks:]:
+        for blk in self.model.blocks[first_trainable:]:
             x = blk(x)
 
         if self.norm_layer:
@@ -69,7 +83,7 @@ class DINOv2(nn.Module):
         f = x[:, 1:]
 
         # Reshape to (B, C, H, W)
-        f = f.reshape((B, H // 14, W // 14, self.num_channels)).permute(0, 3, 1, 2)
+        f = f.reshape((B, H // self.patch_size, W // self.patch_size, self.num_channels)).permute(0, 3, 1, 2)
 
         if self.return_token:
             return f, t
