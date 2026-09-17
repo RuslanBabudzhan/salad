@@ -1,23 +1,23 @@
-# same as V 1.1 but 20k steps
+# Like V1.5, without the final SALAD projection.
 training:
-  # null consumes the complete schedule (4 steps in the snapshot, 40,000 in the full dataset).
-  iterations: 20000
+  iterations: null
   seed: 42
   grad_cache_chunk_size: 32
   checkpoint_every_n_steps: 1000
 
 augmentation:
-  image_size: [256, 256]
+  image_size: [224, 224]
   randaugment_ops: 3
+  image_mean: [0.485, 0.456, 0.406]
+  image_std: [0.229, 0.224, 0.225]
 
 model:
-  backbone: dinov3_vitb16
-  backbone_weights: facebook/dinov3-vitb16-pretrain-lvd1689m
+  backbone: dinov2_vitb14
   trainable_blocks: 4
   num_clusters: 64
   cluster_dim: 256
   token_dim: 256
-  output_dim: 8448
+  output_dim: null
 
 optimizer:
   name: adamw
